@@ -2,12 +2,12 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: sweetledger
-      POSTGRES_PASSWORD: sweetledger
-      POSTGRES_DB: sweetledger
+      POSTGRES_USER: mavya
+      POSTGRES_PASSWORD: mavya
+      POSTGRES_DB: mavya
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - sweetledger_data:/var/lib/postgresql/data
+      - mavya_data:/var/lib/postgresql/data
 volumes:
-  sweetledger_data:
+  mavya_data:

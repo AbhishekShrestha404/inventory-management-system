@@ -1,8 +1,12 @@
-import 'dotenv/config';
+import './env.js';
 import pg from 'pg';
 
-if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
-export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required. Copy .env.example to .env in the project root and set its values.');
+export const db = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  connectionTimeoutMillis: 5000,
+  query_timeout: 10000,
+});
 export type Client = pg.PoolClient;
 
 export async function transaction<T>(work: (client: Client) => Promise<T>): Promise<T> {

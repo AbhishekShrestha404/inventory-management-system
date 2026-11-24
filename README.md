@@ -1,10 +1,10 @@
-# SweetLedger
+# Mavya
 
 An internal inventory and order system for a small sweet factory. Staff can receive ingredients, produce packet batches, and fulfill manually entered orders. The owner can manage recipes, prices, targets, and users.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env` and set `JWT_SECRET`, `OWNER_EMAIL`, and `OWNER_PASSWORD`.
+1. Run `cp .env.example .env` in the project root. Replace the example `JWT_SECRET`, `OWNER_EMAIL`, and `OWNER_PASSWORD` with your own values. Keep the example `DATABASE_URL` for the included Docker database.
 2. Start PostgreSQL: `docker compose up -d db`.
 3. Install dependencies: `npm install`.
 4. Create the schema and first owner: `npm run db:setup`.

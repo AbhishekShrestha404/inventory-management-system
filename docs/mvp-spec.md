@@ -1,4 +1,4 @@
-# SweetLedger MVP specification
+# Mavya MVP specification
 
 ## Purpose and users
 

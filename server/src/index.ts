@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env.js';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
@@ -21,6 +21,7 @@ class HttpError extends Error { constructor(public status: number, message: stri
 const id = z.coerce.number().int().positive();
 const quantity = z.coerce.number().positive().max(100000000);
 const whole = z.coerce.number().int().nonnegative().max(100000000);
+const nonnegative = z.coerce.number().nonnegative().max(100000000);
 const text = z.string().trim().min(1).max(160);
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(`${v}T00:00:00Z`)), 'Invalid date');
 const route = (fn: (req: Authed, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => Promise.resolve(fn(req as Authed, res)).catch(next);
@@ -28,12 +29,13 @@ const route = (fn: (req: Authed, res: Response) => Promise<unknown>) => (req: Re
 const requireUser = route(async (req, _res) => {
   const token = req.cookies.session;
   if (!token) throw new HttpError(401, 'Sign in to continue');
+  let payload: { id: number };
   try {
-    const payload = jwt.verify(token, secret) as { id: number };
-    const result = await db.query<User>('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
-    if (!result.rows[0]) throw new Error('Unknown account');
-    req.user = result.rows[0];
+    payload = jwt.verify(token, secret) as { id: number };
   } catch { throw new HttpError(401, 'Session expired. Sign in again'); }
+  const result = await db.query<User>('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
+  if (!result.rows[0]) throw new HttpError(401, 'Session expired. Sign in again');
+  req.user = result.rows[0];
 });
 const owner = (req: Request, _res: Response, next: NextFunction) => (req as Authed).user.role === 'owner' ? next() : next(new HttpError(403, 'Owner access required'));
 
@@ -55,12 +57,12 @@ app.get('/api/ingredients', route(async (_req, res) => {
   res.json(result.rows);
 }));
 app.post('/api/ingredients', owner, route(async (req, res) => {
-  const data = z.object({ name: text, unit: z.enum(['kg','g','l','ml','piece']), low_stock: whole }).parse(req.body);
+  const data = z.object({ name: text, unit: z.enum(['kg','g','l','ml','piece']), low_stock: nonnegative }).parse(req.body);
   const result = await db.query('INSERT INTO ingredients(name,unit,low_stock) VALUES($1,$2,$3) RETURNING *', [data.name, data.unit, data.low_stock]);
   res.status(201).json(result.rows[0]);
 }));
 app.patch('/api/ingredients/:id', owner, route(async (req, res) => {
-  const data = z.object({ name: text, low_stock: whole, active: z.boolean() }).parse(req.body);
+  const data = z.object({ name: text, low_stock: nonnegative, active: z.boolean() }).parse(req.body);
   const result = await db.query('UPDATE ingredients SET name=$1,low_stock=$2,active=$3 WHERE id=$4 RETURNING *', [data.name,data.low_stock,data.active,id.parse(req.params.id)]);
   if (!result.rows[0]) throw new HttpError(404,'Ingredient not found');
   res.json(result.rows[0]);
@@ -75,7 +77,7 @@ app.post('/api/receipts', route(async (req, res) => {
   const result = await transaction(async c => {
     const ingredient = await c.query('SELECT id FROM ingredients WHERE id=$1 AND active=true', [data.ingredient_id]);
     if (!ingredient.rows[0]) throw new HttpError(400,'Select an active ingredient');
-    const lot = await c.query('INSERT INTO ingredient_lots(ingredient_id,supplier,expires_at,received_qty,remaining_qty,unit_cost) VALUES($1,$2,$3,$4,$4,$5) RETURNING *', [data.ingredient_id,data.supplier,data.expires_at,data.quantity,data.unit_cost]);
+    const lot = await c.query('INSERT INTO ingredient_lots(ingredient_id,supplier,received_at,expires_at,received_qty,remaining_qty,unit_cost) VALUES($1,$2,$3,$4,$5,$5,$6) RETURNING *', [data.ingredient_id,data.supplier,businessDay(),data.expires_at,data.quantity,data.unit_cost]);
     await movement(c,'ingredient',data.ingredient_id,lot.rows[0].id,data.quantity,'receipt',lot.rows[0].id,req.user.id);
     return lot.rows[0];
   });
@@ -117,8 +119,8 @@ app.put('/api/targets/:productId/:date', owner, route(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
-async function movement(c:Client,type:string,itemId:number,lotId:number,qty:number,reason:string,ref:number,user:number) {
-  await c.query('INSERT INTO stock_movements(stock_type,item_id,lot_id,quantity,reason,reference_id,created_by) VALUES($1,$2,$3,$4,$5,$6,$7)',[type,itemId,lotId,qty,reason,ref,user]);
+async function movement(c:Client,type:string,itemId:number,lotId:number,qty:number,reason:string,ref:number,user:number,note='') {
+  await c.query('INSERT INTO stock_movements(stock_type,item_id,lot_id,quantity,reason,reference_id,created_by,note) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[type,itemId,lotId,qty,reason,ref,user,note]);
 }
 async function consume(c:Client, type:'ingredient'|'product', itemId:number, needed:number, reason:string, ref:number, user:number) {
   const table = type === 'ingredient' ? 'ingredient_lots' : 'product_lots';
@@ -213,7 +215,7 @@ app.get('/api/dashboard', route(async (_req, res) => {
   res.json({ today, products:products.rows, ingredients:ingredients.rows, due_orders:orders.rows, packets_today:production.rows[0].packets });
 }));
 app.get('/api/movements', route(async (_req, res) => {
-  const result = await db.query(`SELECT m.*,u.name AS actor,CASE WHEN m.stock_type='ingredient' THEN i.name ELSE p.sweet_name || ' / ' || p.variant END AS item_name FROM stock_movements m JOIN users u ON u.id=m.created_by LEFT JOIN ingredients i ON m.stock_type='ingredient' AND i.id=m.item_id LEFT JOIN products p ON m.stock_type='product' AND p.id=m.item_id ORDER BY m.id DESC LIMIT 200`);
+  const result = await db.query(`SELECT m.*,m.reason || CASE WHEN m.note='' THEN '' ELSE ': ' || m.note END AS reason,u.name AS actor,CASE WHEN m.stock_type='ingredient' THEN i.name ELSE p.sweet_name || ' / ' || p.variant END AS item_name FROM stock_movements m JOIN users u ON u.id=m.created_by LEFT JOIN ingredients i ON m.stock_type='ingredient' AND i.id=m.item_id LEFT JOIN products p ON m.stock_type='product' AND p.id=m.item_id ORDER BY m.id DESC LIMIT 200`);
   res.json(result.rows);
 }));
 app.post('/api/adjustments', owner, route(async (req, res) => {
@@ -226,7 +228,7 @@ app.post('/api/adjustments', owner, route(async (req, res) => {
     if (!lot.rows[0]) throw new HttpError(404,'Lot not found');
     if (Number(lot.rows[0].remaining_qty)+data.delta < 0) throw new HttpError(409,'Adjustment would make stock negative');
     await c.query(`UPDATE ${table} SET remaining_qty=remaining_qty+$1 WHERE id=$2`,[data.delta,data.lot_id]);
-    await movement(c,data.stock_type,Number(lot.rows[0].item_id),data.lot_id,data.delta,'adjustment',data.lot_id,req.user.id);
+    await movement(c,data.stock_type,Number(lot.rows[0].item_id),data.lot_id,data.delta,'adjustment',data.lot_id,req.user.id,data.note);
     return { ok:true, note:data.note };
   });
   res.json(result);
@@ -253,4 +255,4 @@ app.use((error:Error, _req:Request, res:Response, _next:NextFunction) => {
   console.error(error);
   return res.status(500).json({ error:'Server error. Please try again' });
 });
-app.listen(Number(process.env.PORT || 4000), () => console.log(`SweetLedger API listening on ${process.env.PORT || 4000}`));
+app.listen(Number(process.env.PORT || 4000), () => console.log(`Mavya API listening on ${process.env.PORT || 4000}`));

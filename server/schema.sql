@@ -91,9 +91,11 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   quantity NUMERIC(12,3) NOT NULL,
   reason TEXT NOT NULL CHECK (reason IN ('receipt','production_use','production_output','fulfillment','adjustment')),
   reference_id BIGINT,
+  note TEXT NOT NULL DEFAULT '',
   created_by BIGINT NOT NULL REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS ingredient_lots_use_idx ON ingredient_lots(ingredient_id,expires_at) WHERE remaining_qty > 0;
 CREATE INDEX IF NOT EXISTS product_lots_use_idx ON product_lots(product_id,expires_at) WHERE remaining_qty > 0;
 CREATE INDEX IF NOT EXISTS orders_due_idx ON orders(due_date) WHERE status = 'confirmed';
