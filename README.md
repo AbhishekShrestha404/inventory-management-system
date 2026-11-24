@@ -1,28 +1,18 @@
-# StockFlow - Inventory Management System
+# SweetLedger
 
-**Status:** Planned
+An internal inventory and order system for a small sweet factory. Staff can receive ingredients, produce packet batches, and fulfill manually entered orders. The owner can manage recipes, prices, targets, and users.
 
-A full-stack inventory management application designed to help small businesses manage products, monitor stock levels, and record inventory movements.
+## Run locally
 
-## Planned Features
+1. Copy `.env.example` to `.env` and set `JWT_SECRET`, `OWNER_EMAIL`, and `OWNER_PASSWORD`.
+2. Start PostgreSQL: `docker compose up -d db`.
+3. Install dependencies: `npm install`.
+4. Create the schema and first owner: `npm run db:setup`.
+5. Start the API and web app: `npm run dev`.
+6. Open `http://localhost:5173`.
 
-- Product management (add, edit, delete)
-- Stock-in and stock-out tracking
-- Low-stock alerts
-- Inventory dashboard
+The development UI proxies `/api` to the API on port 4000. For a single service deployment, run `npm run build` and `npm start`; Express serves the built UI. Set `DATABASE_URL` and the secrets in the host environment, run `npm run db:setup` before starting, and use HTTPS. Run `pg_dump` regularly for backups.
 
-## Tech Stack
+## Stack
 
-- **Frontend:** React, Vite
-- **Backend:** Node.js, Express
-- **Database:** MongoDB
-
-## Project Preview
-
-![Dashboard Concept](docs/dashboard-concept.png)
-
-*Design concept only. The application has not been implemented yet.*
-
-## Development Status
-
-Currently in the planning phase. Development will begin soon.
+React, Vite, TypeScript, Express, PostgreSQL. See [MVP specification](docs/mvp-spec.md) for workflows and acceptance criteria.
