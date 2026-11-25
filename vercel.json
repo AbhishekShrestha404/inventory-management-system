@@ -1,0 +1,9 @@
+{
+    "outputDirectory": "web/dist",
+    "rewrites": [
+        {
+            "source": "/api/:path*",
+            "destination": "https://mavya.onrender.com/api/:path*"
+        }
+    ]
+}
