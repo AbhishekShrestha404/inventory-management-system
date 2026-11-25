@@ -26,17 +26,20 @@ const text = z.string().trim().min(1).max(160);
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => !Number.isNaN(Date.parse(`${v}T00:00:00Z`)), 'Invalid date');
 const route = (fn: (req: Authed, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => Promise.resolve(fn(req as Authed, res)).catch(next);
 
-const requireUser = route(async (req, _res) => {
-  const token = req.cookies.session;
-  if (!token) throw new HttpError(401, 'Sign in to continue');
-  let payload: { id: number };
-  try {
-    payload = jwt.verify(token, secret) as { id: number };
-  } catch { throw new HttpError(401, 'Session expired. Sign in again'); }
-  const result = await db.query<User>('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
-  if (!result.rows[0]) throw new HttpError(401, 'Session expired. Sign in again');
-  req.user = result.rows[0];
-});
+const requireUser = (req: Request, _res: Response, next: NextFunction) => {
+  void (async () => {
+    const token = req.cookies.session;
+    if (!token) throw new HttpError(401, 'Sign in to continue');
+    let payload: { id: number };
+    try {
+      payload = jwt.verify(token, secret) as { id: number };
+    } catch { throw new HttpError(401, 'Session expired. Sign in again'); }
+    const result = await db.query<User>('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
+    if (!result.rows[0]) throw new HttpError(401, 'Session expired. Sign in again');
+    (req as Authed).user = result.rows[0];
+    next();
+  })().catch(next);
+};
 const owner = (req: Request, _res: Response, next: NextFunction) => (req as Authed).user.role === 'owner' ? next() : next(new HttpError(403, 'Owner access required'));
 
 app.post('/api/auth/login', route(async (req, res) => {

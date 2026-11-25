@@ -9,7 +9,8 @@
     "start": "npm run start -w server",
     "db:setup": "npm run db:setup -w server",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
-    "test": "npm run test -w server"
+    "test": "npm run test -w server",
+    "test:smoke": "npm run build -w server && node server/test/smoke.mjs"
   },
   "devDependencies": { "concurrently": "^9.1.2" }
 }
