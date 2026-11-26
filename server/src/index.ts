@@ -15,7 +15,7 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 app.use(cookieParser());
 
-type User = { id: number; name: string; email: string; role: 'owner' | 'staff' };
+type User = { id: number; name: string; email: string; role: 'owner' | 'staff'; active: boolean };
 type Authed = Request & { user: User };
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 const id = z.coerce.number().int().positive();
@@ -34,7 +34,7 @@ const requireUser = (req: Request, _res: Response, next: NextFunction) => {
     try {
       payload = jwt.verify(token, secret) as { id: number };
     } catch { throw new HttpError(401, 'Session expired. Sign in again'); }
-    const result = await db.query<User>('SELECT id,name,email,role FROM users WHERE id=$1', [payload.id]);
+    const result = await db.query<User>('SELECT id,name,email,role,active FROM users WHERE id=$1 AND active=true', [payload.id]);
     if (!result.rows[0]) throw new HttpError(401, 'Session expired. Sign in again');
     (req as Authed).user = result.rows[0];
     next();
@@ -42,14 +42,19 @@ const requireUser = (req: Request, _res: Response, next: NextFunction) => {
 };
 const owner = (req: Request, _res: Response, next: NextFunction) => (req as Authed).user.role === 'owner' ? next() : next(new HttpError(403, 'Owner access required'));
 
+app.get('/api/health', route(async (_req, res) => {
+  await db.query('SELECT 1');
+  res.json({ status: 'ok' });
+}));
+
 app.post('/api/auth/login', route(async (req, res) => {
   const data = z.object({ email: z.string().email(), password: z.string().min(1) }).parse(req.body);
-  const result = await db.query<User & { password_hash: string }>('SELECT id,name,email,role,password_hash FROM users WHERE email=$1', [data.email.trim().toLowerCase()]);
+  const result = await db.query<User & { password_hash: string }>('SELECT id,name,email,role,active,password_hash FROM users WHERE email=$1 AND active=true', [data.email.trim().toLowerCase()]);
   const user = result.rows[0];
   if (!user || !(await bcrypt.compare(data.password, user.password_hash))) throw new HttpError(401, 'Incorrect email or password');
   const token = jwt.sign({ id: user.id }, secret, { expiresIn: '7d' });
   res.cookie('session', token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 86400000, path: '/' });
-  res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+  res.json({ id: user.id, name: user.name, email: user.email, role: user.role, active: user.active });
 }));
 app.post('/api/auth/logout', (_req, res) => { res.clearCookie('session', { path: '/' }); res.json({ ok: true }); });
 app.get('/api/auth/me', requireUser, (req, res) => res.json((req as Authed).user));
@@ -87,7 +92,7 @@ app.post('/api/receipts', route(async (req, res) => {
   res.status(201).json(result);
 }));
 
-const recipeSchema = z.array(z.object({ ingredient_id:id, qty_per_packet:quantity })).min(1);
+const recipeSchema = z.array(z.object({ ingredient_id:id, qty_per_packet:quantity }));
 app.get('/api/products', route(async (_req, res) => {
   const result = await db.query(`SELECT p.*, COALESCE((SELECT SUM(remaining_qty) FROM product_lots l WHERE l.product_id=p.id AND l.expires_at >= $1),0) AS stock,
     COALESCE((SELECT json_agg(json_build_object('ingredient_id',r.ingredient_id,'ingredient_name',i.name,'unit',i.unit,'qty_per_packet',r.qty_per_packet) ORDER BY i.name) FROM recipes r JOIN ingredients i ON i.id=r.ingredient_id WHERE r.product_id=p.id),'[]'::json) AS recipe
@@ -97,6 +102,7 @@ app.get('/api/products', route(async (_req, res) => {
 app.post('/api/products', owner, route(async (req, res) => {
   const data = z.object({ sweet_name:text, variant:text, sku:text, price:z.coerce.number().nonnegative(), daily_target:whole, low_stock:whole, shelf_life_days:z.coerce.number().int().positive().max(365), active:z.boolean().default(true), recipe:recipeSchema }).parse(req.body);
   if (new Set(data.recipe.map(r => r.ingredient_id)).size !== data.recipe.length) throw new HttpError(400,'Each ingredient can appear once in a recipe');
+  if (data.active && data.recipe.length === 0) throw new HttpError(400, 'Add a recipe before activating this packet');
   const result = await transaction(async c => {
     const p = await c.query('INSERT INTO products(sweet_name,variant,sku,price,daily_target,low_stock,shelf_life_days,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *', [data.sweet_name,data.variant,data.sku,data.price,data.daily_target,data.low_stock,data.shelf_life_days,data.active]);
     for (const r of data.recipe) await c.query('INSERT INTO recipes(product_id,ingredient_id,qty_per_packet) VALUES($1,$2,$3)',[p.rows[0].id,r.ingredient_id,r.qty_per_packet]);
@@ -107,6 +113,7 @@ app.post('/api/products', owner, route(async (req, res) => {
 app.put('/api/products/:id', owner, route(async (req, res) => {
   const data = z.object({ sweet_name:text, variant:text, sku:text, price:z.coerce.number().nonnegative(), daily_target:whole, low_stock:whole, shelf_life_days:z.coerce.number().int().positive().max(365), active:z.boolean(), recipe:recipeSchema }).parse(req.body);
   if (new Set(data.recipe.map(r => r.ingredient_id)).size !== data.recipe.length) throw new HttpError(400,'Each ingredient can appear once in a recipe');
+  if (data.active && data.recipe.length === 0) throw new HttpError(400, 'Add a recipe before activating this packet');
   const result = await transaction(async c => {
     const p = await c.query('UPDATE products SET sweet_name=$1,variant=$2,sku=$3,price=$4,daily_target=$5,low_stock=$6,shelf_life_days=$7,active=$8 WHERE id=$9 RETURNING *',[data.sweet_name,data.variant,data.sku,data.price,data.daily_target,data.low_stock,data.shelf_life_days,data.active,id.parse(req.params.id)]);
     if (!p.rows[0]) throw new HttpError(404,'Product not found');
@@ -183,6 +190,29 @@ app.post('/api/orders', route(async (req, res) => {
   });
   res.status(201).json(result);
 }));
+app.put('/api/orders/:id', route(async (req, res) => {
+  const data = orderSchema.parse(req.body);
+  if (data.fulfillment === 'delivery' && !data.address) throw new HttpError(400, 'Delivery address is required');
+  if (new Set(data.items.map(i => i.product_id)).size !== data.items.length) throw new HttpError(400, 'Add each packet variant once');
+  const result = await transaction(async c => {
+    const current = await c.query('SELECT * FROM orders WHERE id=$1 FOR UPDATE', [id.parse(req.params.id)]);
+    if (!current.rows[0]) throw new HttpError(404, 'Order not found');
+    if (current.rows[0].status !== 'confirmed') throw new HttpError(409, 'Only confirmed orders can be edited');
+    const existing = await c.query('SELECT product_id,unit_price FROM order_items WHERE order_id=$1', [current.rows[0].id]);
+    const agreedPrices = new Map(existing.rows.map(item => [Number(item.product_id), Number(item.unit_price)]));
+    const products = await c.query('SELECT id,price,active FROM products WHERE id=ANY($1::bigint[])', [data.items.map(item => item.product_id)]);
+    if (products.rows.length !== data.items.length || products.rows.some(p => !p.active && !agreedPrices.has(Number(p.id)))) {
+      throw new HttpError(400, 'New order items must use active packet variants');
+    }
+    const prices = new Map(products.rows.map(p => [Number(p.id), agreedPrices.get(Number(p.id)) ?? Number(p.price)]));
+    const total = data.items.reduce((sum, item) => sum + item.quantity * prices.get(item.product_id)!, 0);
+    const updated = await c.query('UPDATE orders SET customer_name=$1,phone=$2,due_date=$3,fulfillment=$4,address=$5,notes=$6,total=$7 WHERE id=$8 RETURNING *', [data.customer_name, data.phone, data.due_date, data.fulfillment, data.address || null, data.notes, total, current.rows[0].id]);
+    await c.query('DELETE FROM order_items WHERE order_id=$1', [current.rows[0].id]);
+    for (const item of data.items) await c.query('INSERT INTO order_items(order_id,product_id,quantity,unit_price) VALUES($1,$2,$3,$4)', [current.rows[0].id, item.product_id, item.quantity, prices.get(item.product_id)]);
+    return updated.rows[0];
+  });
+  res.json(result);
+}));
 app.patch('/api/orders/:id/paid', route(async (req, res) => {
   const paid = z.boolean().parse(req.body.paid);
   const result = await db.query('UPDATE orders SET paid=$1 WHERE id=$2 AND status<>$3 RETURNING *',[paid,id.parse(req.params.id),'cancelled']);
@@ -240,12 +270,27 @@ app.get('/api/lots', owner, route(async (_req, res) => {
   const [a,b] = await Promise.all([db.query('SELECT l.id,\'ingredient\' AS stock_type,i.name AS item_name,l.remaining_qty,l.expires_at FROM ingredient_lots l JOIN ingredients i ON i.id=l.ingredient_id WHERE l.remaining_qty>0 ORDER BY l.expires_at'),db.query("SELECT l.id,'product' AS stock_type,p.sweet_name || ' / ' || p.variant AS item_name,l.remaining_qty,l.expires_at FROM product_lots l JOIN products p ON p.id=l.product_id WHERE l.remaining_qty>0 ORDER BY l.expires_at")]);
   res.json([...a.rows,...b.rows]);
 }));
-app.get('/api/users', owner, route(async (_req,res) => { const r=await db.query('SELECT id,name,email,role,created_at FROM users ORDER BY id'); res.json(r.rows); }));
+app.get('/api/users', owner, route(async (_req,res) => { const r=await db.query('SELECT id,name,email,role,active,created_at FROM users ORDER BY id'); res.json(r.rows); }));
 app.post('/api/users', owner, route(async (req,res) => {
   const data=z.object({ name:text,email:z.string().email(),password:z.string().min(12),role:z.enum(['owner','staff']) }).parse(req.body);
   const hash=await bcrypt.hash(data.password,12);
-  const r=await db.query('INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,name,email,role',[data.name,data.email.toLowerCase(),hash,data.role]);
+  const r=await db.query('INSERT INTO users(name,email,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,name,email,role,active',[data.name,data.email.toLowerCase(),hash,data.role]);
   res.status(201).json(r.rows[0]);
+}));
+app.patch('/api/users/:id', owner, route(async (req,res) => {
+  const targetId = id.parse(req.params.id);
+  const data = z.object({ name:text,email:z.string().email(),role:z.enum(['owner','staff']),active:z.boolean(),password:z.string().min(12).optional() }).parse(req.body);
+  const updated = await transaction(async c => {
+    const owners = await c.query("SELECT id FROM users WHERE role='owner' AND active=true FOR UPDATE");
+    const current = await c.query('SELECT * FROM users WHERE id=$1 FOR UPDATE', [targetId]);
+    if (!current.rows[0]) throw new HttpError(404, 'Team member not found');
+    if (targetId === req.user.id && (!data.active || data.role !== 'owner')) throw new HttpError(400, 'You cannot deactivate or demote your own owner account');
+    if (current.rows[0].role === 'owner' && current.rows[0].active && (!data.active || data.role !== 'owner') && owners.rows.length <= 1) throw new HttpError(400, 'At least one active owner is required');
+    const hash = data.password ? await bcrypt.hash(data.password, 12) : null;
+    const result = await c.query('UPDATE users SET name=$1,email=$2,role=$3,active=$4,password_hash=COALESCE($5,password_hash) WHERE id=$6 RETURNING id,name,email,role,active', [data.name,data.email.trim().toLowerCase(),data.role,data.active,hash,targetId]);
+    return result.rows[0];
+  });
+  res.json(updated);
 }));
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');

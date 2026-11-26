@@ -13,6 +13,8 @@ An internal inventory and order system for a small sweet factory. Staff can rece
 
 To check the full API workflow against an isolated temporary database, keep PostgreSQL running and run `npm run test:smoke`. The test creates and removes its own database; it does not change the working Mavya data.
 
+The unauthenticated `GET /api/health` endpoint checks API and database availability. It returns `{"status":"ok"}` when both are working; use a non-200 response to trigger a deployment alert. Configure automated PostgreSQL backups with the database host, and regularly restore a backup into a separate database to verify it. The application does not schedule backups itself.
+
 The development UI proxies `/api` to the API on port 4000. For a single service deployment, run `npm run build` and `npm start`; Express serves the built UI. Set `DATABASE_URL` and the secrets in the host environment, run `npm run db:setup` before starting, and use HTTPS. Run `pg_dump` regularly for backups.
 
 ## Stack
