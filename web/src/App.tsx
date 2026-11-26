@@ -18,20 +18,28 @@ const dateLabel = (d: string) => { const date = new Date(`${d.slice(0, 10)}T00:0
 const nowDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kathmandu', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 async function api<T>(url: string, method = 'GET', body?: unknown): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
-  try {
-    const response = await fetch(`/api${url}`, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin', signal: controller.signal });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok) throw new ApiError(json.error || `Server returned ${response.status}`, response.status);
-    return json as T;
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') throw new Error('The server did not respond. Check that PostgreSQL and the API are running.');
-    if (error instanceof TypeError) throw new Error('Cannot reach the API. Check that npm run dev is running.');
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+  const retryable = method === 'GET' || (method === 'POST' && url === '/auth/login');
+  for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`/api${url}`, { method, headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin', signal: controller.signal });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new ApiError(json.error || ([502, 503, 504].includes(response.status) ? 'Service is temporarily unavailable. Please try again.' : `Server returned ${response.status}`), response.status);
+      return json as T;
+    } catch (error) {
+      const transient = (error instanceof ApiError && [502, 503, 504].includes(error.status)) || (error as Error).name === 'AbortError' || error instanceof TypeError;
+      if (!retryable || !transient || attempt === 2) {
+        if ((error as Error).name === 'AbortError') throw new Error('The service did not respond. Please try again.');
+        if (error instanceof TypeError) throw new Error('Cannot reach the service. Check your connection and try again.');
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+    await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
   }
+  throw new Error('Service is temporarily unavailable. Please try again.');
 }
 const emptyProduct = { sweet_name: '', variant: '', sku: '', price: '', daily_target: '0', low_stock: '0', shelf_life_days: '7', active: true };
 const nav: Array<{ key: Section; name: string; icon: ReactNode }> = [
