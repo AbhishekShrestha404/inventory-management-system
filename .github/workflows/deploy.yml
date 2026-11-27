@@ -1,0 +1,101 @@
+name: Check and deploy Mavya
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+      OWNER_EMAIL: ci-owner@example.com
+      OWNER_PASSWORD: ci-owner-password-123
+      JWT_SECRET: ci-only-secret-with-at-least-32-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:smoke
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    concurrency:
+      group: mavya-production
+      cancel-in-progress: false
+    env:
+      VERCEL_ORG_ID: team_aWv6oYefgF5tyHPO0v89qVtl
+      VERCEL_PROJECT_ID: prj_QDooLJU2lVGePcsss6HvNERqnBSR
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check deployment secrets
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo '::error::Add the VERCEL_TOKEN repository secret.'
+            exit 1
+          fi
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo '::error::Add the RENDER_DEPLOY_HOOK_URL repository secret.'
+            exit 1
+          fi
+      - name: Deploy API on Render
+        run: |
+          curl --fail-with-body --silent --show-error --get \
+            --data-urlencode "ref=$GITHUB_SHA" \
+            "$RENDER_DEPLOY_HOOK_URL" > /dev/null
+          echo "Requested Render deployment for $GITHUB_SHA"
+      - name: Wait for the Render revision
+        run: |
+          for attempt in $(seq 1 36); do
+            version=$(curl --fail --silent --max-time 10 \
+              https://mavya.onrender.com/api/health | jq -r '.version // empty') || version=''
+            if [ "$version" = "$GITHUB_SHA" ]; then
+              echo "Render is serving $GITHUB_SHA"
+              exit 0
+            fi
+            echo "Waiting for Render revision ($attempt/36)"
+            sleep 10
+          done
+          echo "::error::Render did not serve $GITHUB_SHA within the deployment window."
+          exit 1
+      - name: Install Vercel CLI
+        run: npm install --global vercel@65.7.0
+      - name: Pull Vercel production settings
+        run: vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+      - name: Build Vercel production output
+        run: vercel build --prod --token "$VERCEL_TOKEN"
+      - name: Deploy frontend on Vercel
+        run: vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"

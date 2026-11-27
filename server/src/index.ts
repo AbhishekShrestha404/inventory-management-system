@@ -44,7 +44,7 @@ const owner = (req: Request, _res: Response, next: NextFunction) => (req as Auth
 
 app.get('/api/health', route(async (_req, res) => {
   await db.query('SELECT 1');
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', version: process.env.RENDER_GIT_COMMIT || null });
 }));
 
 app.post('/api/auth/login', route(async (req, res) => {

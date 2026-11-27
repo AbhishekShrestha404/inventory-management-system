@@ -1,5 +1,8 @@
 {
     "outputDirectory": "web/dist",
+    "git": {
+        "deploymentEnabled": false
+    },
     "rewrites": [
         {
             "source": "/api/:path*",
